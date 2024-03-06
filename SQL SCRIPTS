@@ -1,0 +1,98 @@
+---- ## Adhoc requests------
+# 1. Provide a list of products with a base price greater than 500 and that are featured in promo type of 'BOGOF' (Buy One Get One Free) #
+      SELECT 
+     DISTINCT p.product_name,
+	 f.base_price
+FROM
+    fact_events f
+JOIN 
+    dim_products p ON f.product_code = p.product_code
+WHERE
+     f.promo_type = 'BOGOF' AND f.base_price > 500;
+
+# 2. Generate a report that provides an overview of the number of stores in each city. #
+SELECT 
+     City,
+	 COUNT(store_id) AS Total_stores
+FROM
+    dim_stores
+GROUP BY
+       City
+ORDER BY 
+       Total_stores DESC;
+
+# 3. Generate a report that displays each campaign along with the total revenue generated before and after the campaign? #
+   WITH fact_new AS (
+    SELECT
+        campaign_name,
+        base_price,
+        quantity_sold_before_promo,
+        CASE
+            WHEN promo_type='25% OFF' THEN base_price*0.75
+            WHEN promo_type='33% OFF' THEN base_price*0.67
+            WHEN promo_type='50% OFF' THEN base_price*0.5
+            WHEN promo_type='500 Cashback' THEN base_price-500
+            WHEN promo_type='BOGOF' THEN base_price*0.5
+        END AS promo_price,
+        CASE
+            WHEN promo_type='BOGOF' THEN quantity_sold_after_promo*2
+            ELSE quantity_sold_after_promo
+        END AS quantity_sold_after_promo
+    FROM
+        fact_events
+    INNER JOIN
+        dim_campaigns
+    ON
+        fact_events.campaign_id = dim_campaigns.campaign_id
+)
+
+SELECT
+    campaign_name,
+    CONCAT(ROUND(SUM(base_price*quantity_sold_before_promo)/1000000, 1), 'M') AS total_revenue_before_promotion,
+    CONCAT(ROUND(SUM(promo_price*quantity_sold_after_promo)/1000000, 1), 'M') AS total_revenue_after_promotion
+FROM
+    fact_new
+GROUP BY
+    campaign_name;
+
+# 4. Produce a report that calculates the Incremental Sold Quantity (ISU%) for each category during the Diwali campaign # 
+-- Additionally provide rankings for the categories based on their ISU% --
+WITH incremental_sold_qty AS (
+    SELECT 
+        category,
+        SUM(quantity_sold_before_promo) AS total_qty_before_promo,
+        SUM(CASE WHEN promo_type = 'BOGOF' THEN quantity_sold_after_promo * 2 ELSE quantity_sold_after_promo END)
+            - SUM(quantity_sold_before_promo) AS ISU
+    FROM
+        fact_events
+    INNER JOIN
+        dim_products
+    ON
+        fact_events.product_code = dim_products.product_code
+    WHERE
+        campaign_id = 'CAMP_DIW_01'
+    GROUP BY
+        category
+)
+SELECT
+    category,
+    CONCAT(ROUND(100.0 * ISU / total_qty_before_promo, 1), '%') AS ISU_pct,
+    RANK() OVER (ORDER BY ISU / total_qty_before_promo DESC) AS rank_order
+FROM
+    incremental_sold_qty;
+
+# 5. Create a report featuring the Top 5 products, ranked by Incremental Revenue Percentage (IR%), across all campaigns. #
+ WITH product_ir_pct AS
+     (SELECT
+	       DISTINCT p.product_name AS Product,
+		   ROUND((SUM(CAST(f.base_price AS decimal(18, 2)) * CAST(f.quantity_sold_after_promo AS decimal(18, 2))) - 
+		          SUM(CAST(f.base_price AS decimal(18, 2)) * CAST(f.quantity_sold_before_promo AS decimal(18, 2)))) /
+		          NULLIF(SUM(CAST(f.base_price AS decimal(18, 2)) * CAST(f.quantity_sold_before_promo AS decimal(18, 2))), 0) * 100, 2) AS IR_Percentage
+     FROM 
+	      dim_products p
+		       JOIN
+			fact_events f ON p.product_code = f.product_code
+	GROUP BY  product_name)
+SELECT TOP 5 *,
+         DENSE_RANK() OVER(ORDER BY IR_Percentage DESC) as Rank_Order
+FROM product_ir_pct;
